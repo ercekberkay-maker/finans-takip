@@ -176,16 +176,27 @@ function cardPlan(c) {
 const hasPlan = c => (!!c.schedule && Object.keys(c.schedule).length > 0) || cardPurchases(c).length > 0;
 
 // Harcama silinir/değişirse, henüz ödenmemiş taksitleri kart borcundan geri al
+// Harcamanın kart borcunda duran kısmı: henüz bir kart ödemesiyle kapanmamış taksitler.
+// paidMonths, ödeme işaretlendiği anda bu harcamanın taksitini de kapsayan ayları tutar;
+// böylece ödeme sonrası eklenen harcama silinince tamamı borçtan düşer.
+const purchaseOpen = p => sum(purchaseSchedule(p).filter(s => !(p.paidMonths || []).includes(s.mk)).map(s => s.amount));
+
 function removePurchaseEffect(p) {
   const c = state.cards.find(x => x.id === p.cardId);
-  if (!c) return;
-  const key = 'card:' + c.id;
-  const unpaid = sum(purchaseSchedule(p).filter(s => !(key in (state.paid[s.mk] || {}))).map(s => s.amount));
-  c.balance = round2(Math.max(0, (+c.balance || 0) - unpaid));
+  if (c) c.balance = round2(Math.max(0, (+c.balance || 0) - purchaseOpen(p)));
 }
 function applyPurchaseEffect(p) {
   const c = state.cards.find(x => x.id === p.cardId);
-  if (c) c.balance = round2((+c.balance || 0) + (+p.amount || 0));
+  if (c) c.balance = round2((+c.balance || 0) + purchaseOpen(p));
+}
+// Kart ödemesi işaretlenince/kaldırılınca o aya taksiti düşen harcamaları güncelle
+function markCovered(c, month, on) {
+  for (const p of cardPurchases(c)) {
+    if (!purchaseSchedule(p).some(s => s.mk === month)) continue;
+    const set = new Set(p.paidMonths || []);
+    on ? set.add(month) : set.delete(month);
+    p.paidMonths = [...set];
+  }
 }
 
 // Kartsız (nakit / banka kartı) harcamaların ay toplamı
@@ -1071,9 +1082,11 @@ document.addEventListener('click', e => {
           const amount = Math.min(o ? o.amount : +card.monthlyPayment || 0, +card.balance || 0);
           card.balance = +((+card.balance || 0) - amount).toFixed(2);
           p[key] = amount;
+          markCovered(card, month, true);
         } else {
           if (typeof p[key] === 'number') card.balance = +((+card.balance || 0) + p[key]).toFixed(2);
           delete p[key];
+          markCovered(card, month, false);
         }
       } else if (a.checked) p[key] = true;
       else delete p[key];
@@ -1093,7 +1106,10 @@ document.addEventListener('click', e => {
         const t = today();
         for (const o of obligations(t.getFullYear(), t.getMonth())) {
           // Örnek borçlar ödeme sonrası hali gösterir; kart tutarı kaydedilir ki işaret kaldırılınca geri eklensin
-          if (o.date < t) (state.paid[mkey(o.date)] = state.paid[mkey(o.date)] || {})[o.key] = o.type === 'card' ? o.amount : true;
+          if (o.date < t) {
+            (state.paid[mkey(o.date)] = state.paid[mkey(o.date)] || {})[o.key] = o.type === 'card' ? o.amount : true;
+            if (o.type === 'card') markCovered(state.cards.find(c => 'card:' + c.id === o.key), mkey(o.date), true);
+          }
         }
         view = 'dashboard'; save();
       }
