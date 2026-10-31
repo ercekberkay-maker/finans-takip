@@ -308,6 +308,54 @@ dialog footer { border-top: 1px solid var(--border); justify-content: flex-end; 
 .settings p { color: var(--text-2); margin: 6px 0 14px; }
 .settings .btns { display: flex; gap: 8px; flex-wrap: wrap; }
 
+/* ---------- Eşitleme durumu ---------- */
+.brand { position: relative; }
+.sync {
+  position: absolute; left: 52px; bottom: -16px;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--muted); white-space: nowrap;
+}
+.sync::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.sync.ok::before { background: var(--good); }
+.sync.busy::before { background: var(--accent); animation: pulse 1s infinite alternate; }
+.sync.warn::before { background: var(--warning); }
+.sync.err::before { background: var(--critical); }
+@keyframes pulse { to { opacity: .3; } }
+.sidebar .brand { margin-bottom: 10px; }
+
+/* ---------- Giriş ekranı ---------- */
+.auth {
+  position: fixed; inset: 0; z-index: 100; background: var(--page);
+  display: grid; place-items: center; overflow-y: auto;
+  padding: calc(20px + env(safe-area-inset-top)) 16px calc(20px + env(safe-area-inset-bottom));
+}
+.auth[hidden] { display: none; }
+.auth-card {
+  width: min(400px, 100%); background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px; padding: 24px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 14px;
+}
+.auth-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+.auth-brand strong { font-size: 18px; }
+.auth-brand small { display: block; color: var(--muted); font-size: 12px; }
+.auth-tabs { display: grid; grid-template-columns: 1fr 1fr; background: var(--surface-2); border-radius: 10px; padding: 3px; }
+.auth-tabs button { border: 0; background: none; padding: 8px; border-radius: 8px; cursor: pointer; font-weight: 550; color: var(--text-2); }
+.auth-tabs button.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, .08); }
+.auth-card label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 550; color: var(--text-2); }
+.auth-card input {
+  padding: 11px 12px; border-radius: 9px; border: 1px solid var(--border);
+  background: var(--page); font-size: 16px; outline: none;
+}
+.auth-card input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+.auth-card .btn.primary { padding: 11px; font-size: 15px; }
+.auth-card .btn:disabled { opacity: .6; cursor: wait; }
+.auth-sub { margin: 0; color: var(--text-2); }
+.auth-link { border: 0; background: none; color: var(--accent); cursor: pointer; font-size: 13px; padding: 2px; }
+.auth-link.muted { color: var(--muted); margin-top: 4px; }
+.auth-msg { border-radius: 9px; padding: 10px 12px; font-size: 13px; line-height: 1.45; }
+.auth-msg.error { background: color-mix(in srgb, var(--critical) 12%, transparent); color: var(--critical); }
+.auth-msg.info { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); }
+
 /* ---------- Responsive ---------- */
 .grid > * { min-width: 0; }
 @media (max-width: 1100px) {
@@ -322,6 +370,8 @@ dialog footer { border-top: 1px solid var(--border); justify-content: flex-end; 
     gap: 8px; border-right: 0; border-bottom: 1px solid var(--border);
   }
   .brand small { display: none; }
+  .sidebar .brand { margin-bottom: 0; }
+  .sync { position: static; margin-left: auto; }
   .logo { width: 30px; height: 30px; font-size: 15px; border-radius: 8px; }
   #nav { flex-direction: row; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; margin: 0 -4px; }
   #nav::-webkit-scrollbar { display: none; }

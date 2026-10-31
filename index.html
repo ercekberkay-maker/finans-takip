@@ -30,6 +30,7 @@
           <strong>Finans Takip</strong>
           <small>Kişisel finans paneli</small>
         </div>
+        <span id="sync" class="sync off"></span>
       </div>
       <nav id="nav">
         <button data-view="dashboard" class="active"><span>◧</span>Genel Bakış</button>
@@ -63,6 +64,7 @@
   <div id="tip" class="tip" hidden></div>
   <input type="file" id="import-file" accept="application/json" hidden>
   <script src="app.js"></script>
+  <script src="sync.js"></script>
   <script>
     if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       navigator.serviceWorker.register('sw.js');

@@ -52,6 +52,7 @@ let spendOffset = 0;    // harcamalar sayfasındaki ay
 
 function save() {
   localStorage.setItem(STORE, JSON.stringify(state));
+  if (typeof Sync !== 'undefined') Sync.changed();
   render();
 }
 
@@ -803,9 +804,10 @@ function vPurchases() {
 }
 
 function vSettings() {
-  return pageHead('Ayarlar', 'Veri yedekleme, şablon ve görünüm') + `
+  return pageHead('Ayarlar', 'Hesap, veri yedekleme, şablon ve görünüm') + `
   <div class="grid settings">
-    <div class="panel"><h2>Yedekle</h2><p>Tüm verilerini JSON dosyası olarak indir. Veriler yalnızca bu tarayıcıda saklandığı için düzenli yedek alman önerilir.</p>
+    ${typeof Sync !== 'undefined' ? Sync.accountHTML() : ''}
+    <div class="panel"><h2>Yedekle</h2><p>Tüm verilerini JSON dosyası olarak indir. Eşitleme açık olsa da ara sıra yedek almak iyi bir alışkanlıktır.</p>
       <div class="btns"><button class="btn primary" data-act="export">Dışa aktar (.json)</button><button class="btn" data-act="import">İçe aktar</button></div></div>
     <div class="panel"><h2>Şablon / örnek veri</h2><p>Uygulamayı denemek için örnek gelir, kart, kredi ve gider verilerini yükle. Mevcut verilerin silinir.</p>
       <div class="btns"><button class="btn" data-act="demo">Örnek verileri yükle</button></div></div>
@@ -1105,6 +1107,9 @@ document.addEventListener('click', e => {
       break;
     }
     case 'import': $('#import-file').click(); break;
+    case 'login': Sync.showAuth(); break;
+    case 'logout': Sync.logout(); break;
+    case 'sync-now': Sync.refresh(); break;
   }
 });
 
@@ -1118,6 +1123,7 @@ document.addEventListener('input', e => {
   const v = Math.round((parseFloat(inp.value) || 0) * 100) / 100;
   if (v > 0) c.schedule[inp.dataset.month] = v; else delete c.schedule[inp.dataset.month];
   localStorage.setItem(STORE, JSON.stringify(state));
+  if (typeof Sync !== 'undefined') Sync.changed();
   const row = inp.closest('tr'), [yy, mm] = inp.dataset.month.split('-').map(Number);
   const total = round2(v + (+inp.dataset.purchases || 0));
   row.querySelector('.check').disabled = !(total > 0);
