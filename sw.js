@@ -1,5 +1,5 @@
 // Çevrimdışı çalışma: önce ağdan dene (güncel sürüm gelsin), ağ yoksa önbellekten aç.
-const CACHE = 'finans-takip-v3';
+const CACHE = 'finans-takip-v4';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'sync.js', 'receipt.js','manifest.json', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {

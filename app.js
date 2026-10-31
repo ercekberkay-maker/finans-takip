@@ -30,20 +30,40 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const emptyState = () => ({ incomes: [], cards: [], loans: [], expenses: [], purchases: [], paid: {} });
 
 function load() {
-  try { return migrate(Object.assign(emptyState(), JSON.parse(localStorage.getItem(STORE)) || {})); }
-  catch { return emptyState(); }
+  // Sadece bozuk JSON'da boş başla; dönüştürme hatası verileri sessizce silmesin diye yakalanmaz
+  let raw;
+  try { raw = JSON.parse(localStorage.getItem(STORE)) || {}; } catch { raw = {}; }
+  return migrate(Object.assign(emptyState(), raw));
 }
 
 // Eski sürümdeki "son ekstre borcu" alanını "aylık ödenecek tutar"a taşır
+// v2: c.balance artık kartın tüm borcu değil, sadece aylara dağıtılmamış kısmı; plan ve harcamalar borca hesapla eklenir.
+// Toplam borç değişmesin diye eski borçtan ödenmemiş plan toplamı çıkarılır.
 function migrate(s) {
   for (const c of s.cards) {
     if (c.monthlyPayment === undefined) c.monthlyPayment = +c.statement || 0;
     delete c.statement;
   }
+  if ((s.v || 1) < 2) {
+    const prev = state;
+    state = s;
+    try {
+      for (const c of s.cards) {
+        c.balance = round2(Math.max(0, (+c.balance || 0) - (cardDebt({ ...c, balance: 0 }))));
+        // Planı olmayan aylardaki eski ödemeler borçtan düşülmüştü: işaret kaldırılınca geri eklenebilsin
+        const key = 'card:' + c.id, plan = cardPlan(c);
+        for (const [mk, p] of Object.entries(s.paid)) {
+          if (typeof p[key] === 'number' && !((plan[mk] || {}).total > 0)) p[key + '|bal'] = p[key];
+        }
+      }
+    } finally { state = prev; }
+    s.purchases.forEach(p => delete p.paidMonths);
+    s.v = 2;
+  }
   return s;
 }
 
-let state = load();
+let state = emptyState(); // sayfa sonunda load() ile doldurulur (dönüştürme alttaki hesap fonksiyonlarını kullanıyor)
 let view = 'dashboard';
 let calOffset = 0;
 let cardId = null;      // detay sayfası açık olan kart
@@ -82,7 +102,7 @@ function cardInfo(c) {
   if (lastCut > t) lastCut = dateAt(t.getFullYear(), t.getMonth() - 1, +c.cutDay);
   const nextCut = dateAt(lastCut.getFullYear(), lastCut.getMonth() + 1, +c.cutDay);
   const due = dueAfter(c, lastCut);
-  const used = +c.balance || 0, limit = +c.limit || 0;
+  const used = cardDebt(c), limit = +c.limit || 0;
   return {
     lastCut, nextCut, due, used, limit,
     avail: Math.max(limit - used, 0),
@@ -175,28 +195,24 @@ function cardPlan(c) {
 
 const hasPlan = c => (!!c.schedule && Object.keys(c.schedule).length > 0) || cardPurchases(c).length > 0;
 
-// Harcama silinir/değişirse, henüz ödenmemiş taksitleri kart borcundan geri al
-// Harcamanın kart borcunda duran kısmı: henüz bir kart ödemesiyle kapanmamış taksitler.
-// paidMonths, ödeme işaretlendiği anda bu harcamanın taksitini de kapsayan ayları tutar;
-// böylece ödeme sonrası eklenen harcama silinince tamamı borçtan düşer.
-const purchaseOpen = p => sum(purchaseSchedule(p).filter(s => !(p.paidMonths || []).includes(s.mk)).map(s => s.amount));
-
-function removePurchaseEffect(p) {
-  const c = state.cards.find(x => x.id === p.cardId);
-  if (c) c.balance = round2(Math.max(0, (+c.balance || 0) - purchaseOpen(p)));
-}
-function applyPurchaseEffect(p) {
-  const c = state.cards.find(x => x.id === p.cardId);
-  if (c) c.balance = round2((+c.balance || 0) + purchaseOpen(p));
-}
-// Kart ödemesi işaretlenince/kaldırılınca o aya taksiti düşen harcamaları güncelle
-function markCovered(c, month, on) {
-  for (const p of cardPurchases(c)) {
-    if (!purchaseSchedule(p).some(s => s.mk === month)) continue;
-    const set = new Set(p.paidMonths || []);
-    on ? set.add(month) : set.delete(month);
-    p.paidMonths = [...set];
+// Kartın toplam borcu saklanmaz, her seferinde hesaplanır:
+//   aylara dağıtılmamış borç (c.balance) + ödendi işaretlenmemiş ayların plan toplamı (elle girilen + taksitler).
+// Böylece harcama eklenince/silinince ya da ay ödendi işaretlenince borç kendiliğinden doğru olur.
+const monthPaid = (c, mk) => 'card:' + c.id in (state.paid[mk] || {});
+function cardDebt(c) {
+  const key = 'card:' + c.id;
+  let planned = 0;
+  for (const [mk, v] of Object.entries(cardPlan(c))) {
+    if (!monthPaid(c, mk)) planned += v.total;
+    // Ödendi işaretlendikten sonra o aya eklenen harcama: ödenen tutarı aşan kısım hâlâ borçtur
+    else if (typeof state.paid[mk][key] === 'number') planned += Math.max(0, v.total - state.paid[mk][key]);
   }
+  return round2((+c.balance || 0) + planned);
+}
+// Harcamanın borçta duran kısmı: ödenmemiş aylara düşen taksitleri
+function purchaseOpen(p) {
+  const c = state.cards.find(x => x.id === p.cardId);
+  return c ? round2(sum(purchaseSchedule(p).filter(s => !monthPaid(c, s.mk)).map(s => s.amount))) : 0;
 }
 
 // Kartsız (nakit / banka kartı) harcamaların ay toplamı
@@ -611,24 +627,24 @@ function cardSummary(c) {
     if (!(key in (state.paid[k] || {})) && v.total > 0) { planned += v.total; months++; }
   }
   for (const k in state.paid) { const v = state.paid[k][key]; if (typeof v === 'number') paidTotal += v; }
-  const balance = +c.balance || 0;
-  return { planned: round2(planned), months, paidTotal, balance, diff: round2(balance - planned) };
+  return { planned: round2(planned), months, paidTotal, extra: +c.balance || 0, debt: cardDebt(c) };
 }
 
 function cardSummaryHTML(c) {
   const s = cardSummary(c);
   const kpi = (label, value, sub = '', cls = '') => `<div class="panel kpi"><div class="label">${label}</div><div class="value ${cls}">${value}</div><div class="sub">${sub}</div></div>`;
   let check;
-  if (!hasPlan(c)) check = badge(['neutral', 'i', 'Henüz plan yok — aşağıdaki aylara tutar yaz']);
-  else if (Math.abs(s.diff) < 0.01) check = badge(['good', '✓', 'Plan toplam borçla eşleşiyor']);
-  else if (s.diff > 0) check = badge(['warning', '!', `${money(s.diff)} borç henüz bir aya yazılmadı`]);
-  else check = badge(['critical', '!', `Plan toplam borçtan ${money(-s.diff)} fazla`]);
+  if (s.extra > 0) check = `${badge(['warning', '!', `${money(s.extra)} borç hiçbir aya yazılmamış`])}
+    <button class="link" data-act="clear-extra" data-id="${c.id}">Sıfırla</button>
+    <span class="muted-note" style="margin:0 0 0 6px">Aylara dağıttıysan ya da bu tutar artık yoksa sıfırla.</span>`;
+  else if (!hasPlan(c)) check = badge(['neutral', 'i', 'Henüz plan yok, aşağıdaki aylara tutar yaz']);
+  else check = badge(['good', '✓', 'Toplam borç = ödenmemiş ayların toplamı']);
   return `<div class="grid kpis">
-      ${kpi('Toplam borç', money(s.balance), 'Ödendikçe otomatik düşer')}
+      ${kpi('Toplam borç', money(s.debt), 'Ödenmemiş aylar' + (s.extra > 0 ? ' + aylara yazılmamış borç' : ''))}
       ${kpi('Plandaki ödemeler', money(s.planned), `${s.months} ay · ödenmemiş`)}
       ${kpi('Ödenen', money(s.paidTotal), 'İşaretlenen ödemeler', 'pos')}
     </div>
-    <div style="margin:-4px 0 16px">${check}</div>`;
+    <div style="margin:-4px 0 16px;display:flex;align-items:center;flex-wrap:wrap;gap:6px">${check}</div>`;
 }
 
 // Kartın detay sayfasında gösterilecek aylar
@@ -685,13 +701,13 @@ function vCardDetail() {
         <div class="row"><div><div class="bank">${esc(c.bank || 'Banka')}</div><div class="cname">${esc(c.name)}</div></div><div class="chip"></div></div>
         <div>
           <small>Toplam borç</small>
-          <div class="big">${money(ci.used)}</div>
-          <div class="meter"><div style="width:${Math.min(ci.util, 1) * 100}%"></div></div>
-          <div class="row" style="margin-top:6px"><small>Limit ${money0(ci.limit)}</small><small>Kullanım ${pct(ci.util)}</small></div>
+          <div class="big" id="cd-debt">${money(ci.used)}</div>
+          <div class="meter"><div id="cd-meter" style="width:${Math.min(ci.util, 1) * 100}%"></div></div>
+          <div class="row" style="margin-top:6px"><small>Limit ${money0(ci.limit)}</small><small id="cd-util">Kullanım ${pct(ci.util)}</small></div>
         </div>
       </div>
       <div class="panel facts" style="grid-template-columns:1fr 1fr">
-        <div><small>Kullanılabilir limit</small><b>${money(ci.avail)}</b></div>
+        <div><small>Kullanılabilir limit</small><b id="cd-avail">${money(ci.avail)}</b></div>
         <div><small>Asgari ödeme</small><b>${money(c.minPayment)}</b></div>
         <div><small>Ekstre kesim günü</small><b>Her ayın ${c.cutDay}.</b></div>
         <div><small>Son ödeme günü</small><b>Her ayın ${c.dueDay}.</b></div>
@@ -861,7 +877,7 @@ const FORMS = {
       { k: 'name', l: 'Kart adı', t: 'text', req: true, ph: 'Ör. Bonus Platinum' },
       { k: 'bank', l: 'Banka', t: 'text', ph: 'Ör. Garanti BBVA' },
       { k: 'limit', l: 'Kart limiti (₺)', ...MONEY, req: true },
-      { k: 'balance', l: 'Toplam borç (₺)', ...MONEY, req: true, hint: 'Taksitler dahil kartın tüm borcu' },
+      { k: 'balance', l: 'Aylara dağıtılmamış borç (₺)', ...MONEY, def: 0, hint: 'Ay ay plan kullanmıyorsan kartın toplam borcunu yaz. Aylık plandaki tutarlar ve harcamalar toplam borca otomatik eklenir.', full: true },
       { k: 'monthlyPayment', l: 'Varsayılan aylık ödeme (₺)', ...MONEY, def: 0, hint: 'Yalnızca ay ay plan girilmemişse kullanılır' },
       { k: 'minPayment', l: 'Asgari ödeme (₺)', ...MONEY, def: 0, full: true },
       { k: 'cutDay', l: 'Ekstre kesim günü', ...DAY, req: true },
@@ -906,7 +922,7 @@ const FORMS = {
       if (!c || !(+o.amount > 0) || !o.date) return '';
       const sch = purchaseSchedule({ cardId: o.cardId, amount: +o.amount, date: o.date, installments: +o.installments || 1 });
       const back = editing.id ? (state.purchases.find(x => x.id === editing.id) || {}) : {};
-      const avail = (+c.limit || 0) - (+c.balance || 0) + (back.cardId === c.id ? +back.amount || 0 : 0);
+      const avail = (+c.limit || 0) - cardDebt(c) + (back.cardId === c.id ? purchaseOpen(back) : 0);
       return `<b>${c.name}</b> kullanılabilir limit: ${money(avail)} → <b>${money(avail - +o.amount)}</b><br>
         Ödeme planı: ${sch.map(s => `${MON[s.date.getMonth()]} ${String(s.date.getFullYear()).slice(2)} <b>${money(s.amount)}</b>`).join(' · ')}`;
     },
@@ -974,12 +990,13 @@ $('#form').addEventListener('submit', e => {
     const c = state.cards.find(x => x.id === obj.cardId);
     if (c) {
       // Aynı karttaki eski harcama düzenleniyorsa onun tutarı limite geri eklenmiş sayılır
-      const back = old && old.cardId === c.id ? +old.amount || 0 : 0;
-      const avail = (+c.limit || 0) - (+c.balance || 0) + back;
+      const back = old && old.cardId === c.id ? purchaseOpen(old) : 0;
+      const avail = (+c.limit || 0) - cardDebt(c) + back;
       if (obj.amount > avail && !confirm(`Bu harcama ${c.name} kartının kullanılabilir limitini (${money(avail)}) aşıyor. Yine de kaydedilsin mi?`)) return;
     }
-    if (old) { removePurchaseEffect(old); Object.assign(old, obj); applyPurchaseEffect(old); }
-    else { const p = { id: uid(), ...obj }; state.purchases.push(p); applyPurchaseEffect(p); }
+    // Kart borcu harcamalardan hesaplandığı için ayrıca borç güncellemeye gerek yok
+    if (old) Object.assign(old, obj);
+    else state.purchases.push({ id: uid(), ...obj });
   }
   else if (id) Object.assign(state[list].find(x => x.id === id), obj);
   else state[list].push({ id: uid(), ...obj });
@@ -1002,8 +1019,8 @@ function demoData() {
       { id: uid(), name: 'Freelance proje', amount: 22000, type: 'once', date: iso(new Date(y, m + 1, 15)) },
     ],
     cards: [
-      { id: uid(), name: 'Bonus Platinum', bank: 'Garanti BBVA', limit: 120000, balance: 46850, monthlyPayment: 0, minPayment: 5000, cutDay: 12, dueDay: 22, schedule: plan([12500, 12500, 11000, 9800, 7550, 6000]) },
-      { id: uid(), name: 'World Card', bank: 'Yapı Kredi', limit: 60000, balance: 51300, monthlyPayment: 0, minPayment: 4000, cutDay: 25, dueDay: 5, schedule: plan([9800, 11200, 9500, 8400, 7400, 6200, 4600, 4000]) },
+      { id: uid(), name: 'Bonus Platinum', bank: 'Garanti BBVA', limit: 120000, balance: 0, monthlyPayment: 0, minPayment: 5000, cutDay: 12, dueDay: 22, schedule: plan([12500, 12500, 11000, 9800, 7550, 6000]) },
+      { id: uid(), name: 'World Card', bank: 'Yapı Kredi', limit: 60000, balance: 0, monthlyPayment: 0, minPayment: 4000, cutDay: 25, dueDay: 5, schedule: plan([9800, 11200, 9500, 8400, 7400, 6200, 4600, 4000]) },
       { id: uid(), name: 'Axess', bank: 'Akbank', limit: 45000, balance: 8400, monthlyPayment: 4200, minPayment: 1680, cutDay: 3, dueDay: 13 },
     ],
     loans: [
@@ -1020,6 +1037,7 @@ function demoData() {
     ],
     purchases: [],
     paid: {},
+    v: 2,
   };
   const [bonus, world] = data.cards;
   data.purchases = [
@@ -1032,11 +1050,6 @@ function demoData() {
     { id: uid(), name: 'Pazar alışverişi', amount: 960, date: day(6), cardId: '', installments: 1, category: 'Market' },
     { id: uid(), name: 'Sinema', amount: 600, date: day(9), cardId: '', installments: 1, category: 'Eğlence' },
   ];
-  // Kartlı harcamalar kart borcuna (limite) eklenir
-  data.purchases.forEach(p => {
-    const c = data.cards.find(x => x.id === p.cardId);
-    if (c) c.balance += p.amount;
-  });
   return data;
 }
 
@@ -1058,7 +1071,6 @@ document.addEventListener('click', e => {
       const extra = list === 'purchases' && item.cardId ? '\nÖdenmemiş taksitleri kart borcundan düşülecek.'
         : list === 'cards' && cardPurchases(item).length ? `\nBu karta ait ${cardPurchases(item).length} harcama da silinecek.` : '';
       if (confirm(`"${item.name}" silinsin mi?${extra}`)) {
-        if (list === 'purchases') removePurchaseEffect(item);
         if (list === 'cards') state.purchases = state.purchases.filter(p => p.cardId !== item.id);
         state[list] = state[list].filter(x => x !== item);
         save();
@@ -1069,24 +1081,31 @@ document.addEventListener('click', e => {
     case 'close-modal': $('#modal').close(); break;
     case 'open-card': cardId = a.dataset.id; cardExtra = 0; view = 'card'; render(); window.scrollTo(0, 0); break;
     case 'more-months': cardExtra += 6; render(); break;
+    case 'clear-extra': {
+      const c = state.cards.find(x => x.id === a.dataset.id);
+      if (c && confirm(`Aylara yazılmamış ${money(c.balance)} borç sıfırlansın mı? Toplam borç, ödenmemiş ayların toplamı olacak.`)) { c.balance = 0; save(); }
+      break;
+    }
     case 'cal': calOffset = a.dataset.d === '0' ? 0 : calOffset + Number(a.dataset.d); render(); break;
     case 'pay': {
       const month = a.dataset.month, key = a.dataset.key;
       const p = state.paid[month] = state.paid[month] || {};
       const card = key.startsWith('card:') && state.cards.find(c => 'card:' + c.id === key);
       if (card) {
-        // Kart ödemesi: işaretlenince toplam borçtan düş, işaret kaldırılınca geri ekle
+        // Plandaki ay ödenince borç hesaptan kendiliğinden düşer. Planı olmayan ayda "aylık ödenecek tutar"
+        // aylara dağıtılmamış borçtan düşülür; düşülen tutar "|bal" ile saklanır ki işaret kaldırılınca geri eklensin.
+        const bal = key + '|bal';
         if (a.checked) {
-          const [yy, mm] = month.split('-').map(Number);
-          const o = obligations(yy, mm - 1).find(x => x.key === key);
-          const amount = Math.min(o ? o.amount : +card.monthlyPayment || 0, +card.balance || 0);
-          card.balance = +((+card.balance || 0) - amount).toFixed(2);
-          p[key] = amount;
-          markCovered(card, month, true);
+          const planned = (cardPlan(card)[month] || {}).total || 0;
+          if (planned > 0) p[key] = planned;
+          else {
+            const amount = Math.min(+card.monthlyPayment || 0, +card.balance || 0);
+            card.balance = round2((+card.balance || 0) - amount);
+            p[key] = p[bal] = amount;
+          }
         } else {
-          if (typeof p[key] === 'number') card.balance = +((+card.balance || 0) + p[key]).toFixed(2);
-          delete p[key];
-          markCovered(card, month, false);
+          if (typeof p[bal] === 'number') card.balance = round2((+card.balance || 0) + p[bal]);
+          delete p[key]; delete p[bal];
         }
       } else if (a.checked) p[key] = true;
       else delete p[key];
@@ -1105,10 +1124,12 @@ document.addEventListener('click', e => {
         // Bu ayın tarihi geçmiş ödemeleri ödenmiş say
         const t = today();
         for (const o of obligations(t.getFullYear(), t.getMonth())) {
-          // Örnek borçlar ödeme sonrası hali gösterir; kart tutarı kaydedilir ki işaret kaldırılınca geri eklensin
           if (o.date < t) {
-            (state.paid[mkey(o.date)] = state.paid[mkey(o.date)] || {})[o.key] = o.type === 'card' ? o.amount : true;
-            if (o.type === 'card') markCovered(state.cards.find(c => 'card:' + c.id === o.key), mkey(o.date), true);
+            const p = state.paid[mkey(o.date)] = state.paid[mkey(o.date)] || {};
+            const c = o.type === 'card' && state.cards.find(x => 'card:' + x.id === o.key);
+            p[o.key] = c ? o.amount : true;
+            // Örnek borç ödeme sonrası hali gösterir; işaret kaldırılınca tutar borca geri eklenir
+            if (c && !hasPlan(c)) p[o.key + '|bal'] = o.amount;
           }
         }
         view = 'dashboard'; save();
@@ -1151,6 +1172,12 @@ document.addEventListener('input', e => {
   row.querySelector('.tot').innerHTML = `<b>${total > 0 ? money(total) : '—'}</b>`;
   row.querySelector('.st').innerHTML = schedRowStatus({ date: dateAt(yy, mm - 1, +c.dueDay), paid: false, amount: total });
   $('#card-summary').innerHTML = cardSummaryHTML(c);
+  // Elle girilen tutar toplam borcu değiştirir: kart görselini de yeniden çizmeden güncelle
+  const ci = cardInfo(c);
+  $('#cd-debt').textContent = money(ci.used);
+  $('#cd-meter').style.width = Math.min(ci.util, 1) * 100 + '%';
+  $('#cd-util').textContent = 'Kullanım ' + pct(ci.util);
+  $('#cd-avail').textContent = money(ci.avail);
 });
 
 $('#import-file').addEventListener('change', async e => {
@@ -1174,4 +1201,5 @@ addEventListener('resize', () => {
   resizeTimer = setTimeout(() => { if (chartJobs.length) chartJobs.forEach(fn => fn()); }, 150);
 });
 
+state = load();
 render();
