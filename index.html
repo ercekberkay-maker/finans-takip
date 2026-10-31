@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Finans Takip</title>
+  <meta name="theme-color" content="#2a78d6">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Finans">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+  <script>
+    (function () {
+      var t = localStorage.getItem('finans-takip-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.dataset.theme = t;
+    })();
+  </script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo">₺</span>
+        <div>
+          <strong>Finans Takip</strong>
+          <small>Kişisel finans paneli</small>
+        </div>
+      </div>
+      <nav id="nav">
+        <button data-view="dashboard" class="active"><span>◧</span>Genel Bakış</button>
+        <button data-view="calendar"><span>▦</span>Ödeme Takvimi</button>
+        <button data-view="incomes"><span>↗</span>Gelirler</button>
+        <button data-view="cards"><span>▭</span>Kredi Kartları</button>
+        <button data-view="purchases"><span>⇣</span>Harcamalar</button>
+        <button data-view="loans"><span>◔</span>Krediler</button>
+        <button data-view="expenses"><span>↻</span>Sabit Giderler</button>
+        <button data-view="settings"><span>⚙</span>Ayarlar</button>
+      </nav>
+      <button class="theme-btn" data-act="theme">◐ Tema değiştir</button>
+    </aside>
+    <main id="main"></main>
+  </div>
+
+  <dialog id="modal">
+    <form id="form" method="dialog">
+      <header>
+        <h3 id="form-title"></h3>
+        <button type="button" class="icon-btn" data-act="close-modal" aria-label="Kapat">✕</button>
+      </header>
+      <div id="form-fields" class="form-grid"></div>
+      <footer>
+        <button type="button" class="btn ghost" data-act="close-modal">Vazgeç</button>
+        <button type="submit" class="btn primary">Kaydet</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="tip" class="tip" hidden></div>
+  <input type="file" id="import-file" accept="application/json" hidden>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+      navigator.serviceWorker.register('sw.js');
+    }
+  </script>
+</body>
+</html>
