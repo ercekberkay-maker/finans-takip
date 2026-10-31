@@ -765,6 +765,7 @@ function vPurchases() {
       <strong>${MONL[m]} ${y}</strong>
       <button class="btn sm" data-act="spend-month" data-d="1">→</button>
       ${spendOffset ? '<button class="btn sm" data-act="spend-month" data-d="0">Bu ay</button>' : ''}
+      <button class="btn" data-act="add-receipt">📷 Fişten ekle</button>
       <button class="btn primary" data-act="add" data-list="purchases">+ Harcama ekle</button>
     </div>`;
 
@@ -876,7 +877,10 @@ const FORMS = {
     ],
   },
   purchases: {
-    title: 'Harcama', fields: [
+    title: 'Harcama',
+    // Yeni harcamada fiş fotoğrafından tutar/tarih okuma alanı (receipt.js)
+    top: id => !id && typeof Receipt !== 'undefined' ? Receipt.html() : '',
+    fields: [
       { k: 'name', l: 'Açıklama', t: 'text', req: true, ph: 'Ör. Market alışverişi, telefon', full: true },
       { k: 'amount', l: 'Toplam tutar (₺)', ...MONEY, req: true },
       { k: 'date', l: 'Harcama tarihi', t: 'date', req: true, def: () => { const d = today(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; } },
@@ -905,7 +909,7 @@ function openForm(list, id, preset = {}) {
   const item = id ? state[list].find(x => x.id === id) : preset;
   editing = { list, id };
   $('#form-title').textContent = (id ? 'Düzenle: ' : 'Yeni ') + spec.title;
-  $('#form-fields').innerHTML = spec.fields.map(f => {
+  $('#form-fields').innerHTML = (spec.top ? spec.top(id) : '') + spec.fields.map(f => {
     const def = typeof f.def === 'function' ? f.def() : f.def;
     const v = item[f.k] ?? def ?? '';
     const opts = typeof f.opts === 'function' ? f.opts() : f.opts;
@@ -917,7 +921,7 @@ function openForm(list, id, preset = {}) {
   }).join('') + (spec.preview ? '<div id="form-preview" class="form-preview full"></div>' : '');
   syncForm();
   $('#modal').showModal();
-  $('#form-fields input')?.focus();
+  $('#form-fields input:not([type=file])')?.focus();
 }
 
 function formValues() {
@@ -1035,6 +1039,7 @@ document.addEventListener('click', e => {
   const act = a.dataset.act;
   switch (act) {
     case 'add': openForm(a.dataset.list, null, a.dataset.card ? { cardId: a.dataset.card } : {}); break;
+    case 'add-receipt': openForm('purchases'); document.activeElement.blur(); $('#receipt-file')?.click(); break;
     case 'edit': openForm(a.dataset.list, a.dataset.id); break;
     case 'del': {
       const list = a.dataset.list, item = state[list].find(x => x.id === a.dataset.id);
