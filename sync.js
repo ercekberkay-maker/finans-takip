@@ -197,6 +197,8 @@ const Sync = (() => {
   }
 
   function applyRemote(remote) {
+    // Buluttaki sürüm bu cihazdakinin üzerine yazılmadan önce yerel hal yedeklenir
+    if (typeof Backup !== 'undefined') Backup.snapshot('Buluttan veri gelmeden önceki hal');
     state = migrate(Object.assign(emptyState(), remote.data || {}));
     localStorage.setItem(STORE, JSON.stringify(state));
     meta.dirty = false;
@@ -374,6 +376,7 @@ const Sync = (() => {
     try { await api('/auth/v1/logout', { method: 'POST', auth: true }); } catch { /* yine de çık */ }
     meta = {};
     saveMeta();
+    if (typeof Backup !== 'undefined') Backup.clear();
     state = emptyState();
     localStorage.setItem(STORE, JSON.stringify(state));
     view = 'dashboard';
@@ -394,7 +397,10 @@ const Sync = (() => {
     }
   }
 
-  return { init, changed, pull, push, refresh, logout, showAuth: () => { authMode = 'login'; showAuth(); }, accountHTML, paintStatus };
+  return {
+    init, changed, pull, push, refresh, logout, showAuth: () => { authMode = 'login'; showAuth(); }, accountHTML, paintStatus,
+    api, user: () => session && session.user,   // yedekleme (backup.js) için
+  };
 })();
 
 Sync.init();

@@ -70,6 +70,9 @@ let cardId = null;      // detay sayfası açık olan kart
 let cardExtra = 0;      // detay sayfasında ek gösterilen ay sayısı
 let spendOffset = 0;    // harcamalar sayfasındaki ay
 
+// Verilerin üzerine yazan işlemlerden önce cihaza yedek al (backup.js)
+const backupBefore = reason => { if (typeof Backup !== 'undefined') Backup.snapshot(reason); };
+
 function save() {
   localStorage.setItem(STORE, JSON.stringify(state));
   if (typeof Sync !== 'undefined') Sync.changed();
@@ -189,11 +192,47 @@ function cardPlan(c) {
       e.items.push({ name: p.name, amount: s.amount, i: s.i, n: s.n });
     }
   }
-  for (const e of Object.values(map)) e.total = round2(e.manual + e.purchases);
+  // Ekstre girilmiş ayda tutarı banka belirler; uygulamanın hesabıyla fark "ekstre farkı" olur (faiz, ücret, iade…)
+  const st = c.statements || {};
+  for (const mk of Object.keys(st)) slot(mk);
+  for (const [mk, e] of Object.entries(map)) {
+    e.computed = round2(e.manual + e.purchases);
+    e.statement = st[mk];
+    e.adjust = e.statement !== undefined ? round2(e.statement - e.computed) : 0;
+    e.total = e.statement !== undefined ? e.statement : e.computed;
+  }
   return map;
 }
 
-const hasPlan = c => (!!c.schedule && Object.keys(c.schedule).length > 0) || cardPurchases(c).length > 0;
+const hasPlan = c => ['schedule', 'statements'].some(k => c[k] && Object.keys(c[k]).length > 0) || cardPurchases(c).length > 0;
+
+// Son ödeme ayına ait ekstrenin kesim tarihi
+function cutBefore(c, due) {
+  let x = dateAt(due.getFullYear(), due.getMonth(), +c.cutDay);
+  if (x >= due) x = dateAt(due.getFullYear(), due.getMonth() - 1, +c.cutDay);
+  return x;
+}
+
+// Kesilmiş ama henüz ekstre tutarı onaylanmamış ve ödenmemiş kart ekstreleri
+function pendingStatements(cards = state.cards) {
+  return cards.filter(hasPlan).map(c => {
+    const ci = cardInfo(c), mk = mkey(ci.due);
+    if (monthPaid(c, mk) || (c.statements || {})[mk] !== undefined) return null;
+    return { c, mk, due: ci.due, cut: ci.lastCut, expected: (cardPlan(c)[mk] || {}).computed || 0 };
+  }).filter(Boolean);
+}
+
+function statementBanner(cards) {
+  return pendingStatements(cards).map(s => `<div class="stmt-banner">
+      <span class="stmt-ic">🧾</span>
+      <div class="stmt-txt"><b>${esc(s.c.name)} · ${MONL[s.due.getMonth()]} ekstresi kesildi</b>
+        <small>Kesim ${fmtDs(s.cut)} · son ödeme ${fmtDs(s.due)}. Uygulamaya göre <b>${money(s.expected)}</b>. Ekstrendeki dönem borcu aynı mı?</small></div>
+      <div class="stmt-btns">
+        <button class="btn sm primary" data-act="stmt-ok" data-id="${s.c.id}" data-month="${s.mk}">Evet, doğru</button>
+        <button class="btn sm" data-act="stmt-edit" data-id="${s.c.id}" data-month="${s.mk}">Farklı tutar gir</button>
+      </div>
+    </div>`).join('');
+}
 
 // Kartın toplam borcu saklanmaz, her seferinde hesaplanır:
 //   aylara dağıtılmamış borç (c.balance) + ödendi işaretlenmemiş ayların plan toplamı (elle girilen + taksitler).
@@ -461,7 +500,7 @@ function vDashboard() {
     chartJobs.push(() => lineChart($('#ch-loan'), labels, vals, '--s2', 'Kalan kredi borcu'));
   }
 
-  return head + `
+  return head + statementBanner() + `
   <div class="grid kpis six">
     ${kpi(`${MONL[m]} geliri`, money0(income), `${incomesFor(y, m).length} gelir kalemi`)}
     ${kpi(`${MONL[m]} ödemeleri`, money0(obTotal), `Kalan: <b>${money0(obLeft)}</b>`)}
@@ -680,12 +719,17 @@ function vCardDetail() {
     const total = paid && typeof stored === 'number' ? stored : e.total;
     const isNow = m0.getFullYear() === t.getFullYear() && m0.getMonth() === t.getMonth();
     const tipText = e.items.map(it => `${it.name}${it.n > 1 ? ` (${it.i + 1}/${it.n})` : ''}: ${money(it.amount)}`).join('\n');
+    const hasSt = e.statement !== undefined;
+    const lock = paid ? 'Tutarı değiştirmek için önce ödendi işaretini kaldır' : hasSt ? 'Bu ayın tutarı ekstreden geliyor; değiştirmek için ekstre tutarını düzenle' : '';
+    const stLink = hasSt
+      ? `<button class="link st-tag" data-act="stmt-edit" data-id="${c.id}" data-month="${mk}" title="Uygulamanın hesabı: ${money(e.computed)}">✓ Ekstre${e.adjust ? ` · fark ${e.adjust > 0 ? '+' : ''}${money(e.adjust)}` : ''}</button>`
+      : !paid && cutBefore(c, due) <= t && (e.computed > 0 || mk === mkey(ci.due)) ? `<button class="link st-tag" data-act="stmt-edit" data-id="${c.id}" data-month="${mk}">ekstre gir</button>` : '';
     return `<tr class="${paid ? 'is-paid' : ''} ${isNow ? 'is-now' : ''}" data-month="${mk}">
       <td><b>${MONL[m0.getMonth()]} ${m0.getFullYear()}</b>${isNow ? '<span class="tag">bu ay</span>' : ''}<span class="sub">Son ödeme ${fmtDs(due)}</span></td>
       <td class="num"><input class="sched-input" type="number" min="0" step="0.01" placeholder="0,00" value="${manual}"
-        data-id="${c.id}" data-month="${mk}" data-purchases="${e.purchases}" ${paid ? 'disabled title="Tutarı değiştirmek için önce ödendi işaretini kaldır"' : ''} aria-label="${MONL[m0.getMonth()]} elle girilen tutar"></td>
+        data-id="${c.id}" data-month="${mk}" data-purchases="${e.purchases}" ${lock ? `disabled title="${lock}"` : ''} aria-label="${MONL[m0.getMonth()]} elle girilen tutar"></td>
       <td class="num">${e.purchases > 0 ? `<span class="has-tip" title="${esc(tipText)}">${money(e.purchases)}<span class="sub">${e.items.length} harcama</span></span>` : '<span class="muted-note">—</span>'}</td>
-      <td class="num tot"><b>${total > 0 ? money(total) : '—'}</b></td>
+      <td class="num tot"><b>${total > 0 ? money(total) : '—'}</b>${stLink}</td>
       <td class="st">${schedRowStatus({ date: due, paid, amount: total })}</td>
       <td><input type="checkbox" class="check" data-act="pay" data-key="${key}" data-month="${mk}" ${paid ? 'checked' : ''} ${!paid && !(total > 0) ? 'disabled' : ''} aria-label="${MONL[m0.getMonth()]} ödendi"></td>
     </tr>`;
@@ -694,6 +738,7 @@ function vCardDetail() {
 
   return pageHead(esc(c.name), `${esc(c.bank || '')} · Aylık ödemelerini ay ay gir, ödedikçe işaretle`,
     `<div class="actions"><button class="btn" data-view="cards">← Kartlar</button><button class="btn" data-act="edit" data-list="cards" data-id="${c.id}">Kartı düzenle</button><button class="btn primary" data-act="add" data-list="purchases" data-card="${c.id}">+ Harcama ekle</button></div>`) + `
+  ${statementBanner([c])}
   <div id="card-summary">${cardSummaryHTML(c)}</div>
   <div class="grid dash">
     <div class="span-4">
@@ -835,13 +880,14 @@ function vSettings() {
   return pageHead('Ayarlar', 'Hesap, veri yedekleme, şablon ve görünüm') + `
   <div class="grid settings">
     ${typeof Sync !== 'undefined' ? Sync.accountHTML() : ''}
-    <div class="panel"><h2>Yedekle</h2><p>Tüm verilerini JSON dosyası olarak indir. Eşitleme açık olsa da ara sıra yedek almak iyi bir alışkanlıktır.</p>
+    ${typeof Backup !== 'undefined' ? Backup.html() : ''}
+    <div class="panel"><h2>Dosyaya yedekle</h2><p>Tüm verilerini JSON dosyası olarak indir ya da daha önce indirdiğin dosyayı geri yükle.</p>
       <div class="btns"><button class="btn primary" data-act="export">Dışa aktar (.json)</button><button class="btn" data-act="import">İçe aktar</button></div></div>
     <div class="panel"><h2>Şablon / örnek veri</h2><p>Uygulamayı denemek için örnek gelir, kart, kredi ve gider verilerini yükle. Mevcut verilerin silinir.</p>
       <div class="btns"><button class="btn" data-act="demo">Örnek verileri yükle</button></div></div>
     <div class="panel"><h2>Görünüm</h2><p>Açık ve koyu tema arasında geçiş yap.</p>
       <div class="btns"><button class="btn" data-act="theme">◐ Tema değiştir</button></div></div>
-    <div class="panel"><h2>Tüm verileri sil</h2><p>Bu işlem geri alınamaz. Önce yedek almayı unutma.</p>
+    <div class="panel"><h2>Tüm verileri sil</h2><p>Tüm kayıtların silinir. Silmeden önce bu cihaza otomatik yedek alınır; "Otomatik yedekler"den geri dönebilirsin.</p>
       <div class="btns"><button class="btn danger" data-act="reset">Verileri sil</button></div></div>
   </div>`;
 }
@@ -929,13 +975,34 @@ const FORMS = {
   },
 };
 
+// Ekstre tutarı: listeye değil kartın statements alanına yazılır (submit'te özel işlenir)
+FORMS.statement = {
+  heading: ({ cardId, month }) => {
+    const c = state.cards.find(x => x.id === cardId), [yy, mm] = month.split('-').map(Number);
+    return `${c ? c.name : ''} · ${MONL[mm - 1]} ${yy} ekstresi`;
+  },
+  fields: [
+    { k: 'amount', l: 'Ekstredeki dönem borcu (₺)', ...MONEY, full: true, hint: 'Ekstrede "dönem borcu / ödenecek tutar" olarak yazan rakam. Boş bırakıp kaydedersen ekstre kaydı kaldırılır.' },
+  ],
+  preview: o => {
+    const { cardId, month } = editing.preset, c = state.cards.find(x => x.id === cardId);
+    if (!c) return '';
+    const calc = (cardPlan(c)[month] || {}).computed || 0;
+    if (o.amount === '') return `Uygulamanın hesabı: <b>${money(calc)}</b> (elle girilen + harcama taksitleri).`;
+    const diff = round2(+o.amount - calc);
+    return `Uygulamanın hesabı: <b>${money(calc)}</b> · Ekstre: <b>${money(+o.amount)}</b><br>` + (Math.abs(diff) < 0.01
+      ? '✓ Tutarlar eşleşiyor.'
+      : `Fark <b>${diff > 0 ? '+' : ''}${money(diff)}</b>: bu ayın ödemesi ekstre tutarı olur, fark toplam borca ${diff > 0 ? 'eklenir (faiz, ücret, unutulan harcama…)' : 'düşer (iade, indirim…)'}.`);
+  },
+};
+
 let editing = null;
 
 function openForm(list, id, preset = {}) {
   const spec = FORMS[list];
   const item = id ? state[list].find(x => x.id === id) : preset;
-  editing = { list, id };
-  $('#form-title').textContent = (id ? 'Düzenle: ' : 'Yeni ') + spec.title;
+  editing = { list, id, preset };
+  $('#form-title').textContent = spec.heading ? spec.heading(preset) : (id ? 'Düzenle: ' : 'Yeni ') + spec.title;
   $('#form-fields').innerHTML = (spec.top ? spec.top(id) : '') + spec.fields.map(f => {
     const def = typeof f.def === 'function' ? f.def() : f.def;
     const v = item[f.k] ?? def ?? '';
@@ -984,7 +1051,14 @@ $('#form').addEventListener('submit', e => {
     if (!(f.k in raw)) continue;
     obj[f.k] = f.t === 'number' ? (raw[f.k] === '' ? '' : Number(raw[f.k])) : raw[f.k].trim();
   }
-  if (list === 'purchases') {
+  if (list === 'statement') {
+    const { cardId, month } = editing.preset, c = state.cards.find(x => x.id === cardId);
+    if (c) {
+      c.statements = c.statements || {};
+      if (obj.amount === '') delete c.statements[month]; else c.statements[month] = round2(obj.amount);
+    }
+  }
+  else if (list === 'purchases') {
     if (!obj.cardId) obj.installments = 1;
     const old = id ? state.purchases.find(x => x.id === id) : null;
     const c = state.cards.find(x => x.id === obj.cardId);
@@ -1081,6 +1155,16 @@ document.addEventListener('click', e => {
     case 'close-modal': $('#modal').close(); break;
     case 'open-card': cardId = a.dataset.id; cardExtra = 0; view = 'card'; render(); window.scrollTo(0, 0); break;
     case 'more-months': cardExtra += 6; render(); break;
+    case 'stmt-ok': {
+      const c = state.cards.find(x => x.id === a.dataset.id);
+      if (c) { c.statements = { ...c.statements, [a.dataset.month]: (cardPlan(c)[a.dataset.month] || {}).computed || 0 }; save(); }
+      break;
+    }
+    case 'stmt-edit': {
+      const c = state.cards.find(x => x.id === a.dataset.id);
+      if (c) openForm('statement', null, { cardId: c.id, month: a.dataset.month, amount: (c.statements || {})[a.dataset.month] });
+      break;
+    }
     case 'clear-extra': {
       const c = state.cards.find(x => x.id === a.dataset.id);
       if (c && confirm(`Aylara yazılmamış ${money(c.balance)} borç sıfırlansın mı? Toplam borç, ödenmemiş ayların toplamı olacak.`)) { c.balance = 0; save(); }
@@ -1120,6 +1204,7 @@ document.addEventListener('click', e => {
     case 'demo': {
       const has = state.incomes.length + state.cards.length + state.loans.length + state.expenses.length + state.purchases.length;
       if (!has || confirm('Mevcut verilerin örnek verilerle değiştirilecek. Devam edilsin mi?')) {
+        backupBefore('Örnek veri yüklemeden önceki hal');
         state = demoData();
         // Bu ayın tarihi geçmiş ödemeleri ödenmiş say
         const t = today();
@@ -1137,7 +1222,10 @@ document.addEventListener('click', e => {
       break;
     }
     case 'reset':
-      if (confirm('Tüm veriler kalıcı olarak silinecek. Emin misin?')) { state = emptyState(); save(); }
+      if (confirm('Tüm veriler silinecek. Emin misin?\n\nSilmeden önce bu cihaza bir yedek alınır; Ayarlar → Otomatik yedekler\'den geri dönebilirsin.')) {
+        backupBefore('Verileri silmeden önceki hal');
+        state = emptyState(); save();
+      }
       break;
     case 'export': {
       const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
@@ -1169,7 +1257,7 @@ document.addEventListener('input', e => {
   const row = inp.closest('tr'), [yy, mm] = inp.dataset.month.split('-').map(Number);
   const total = round2(v + (+inp.dataset.purchases || 0));
   row.querySelector('.check').disabled = !(total > 0);
-  row.querySelector('.tot').innerHTML = `<b>${total > 0 ? money(total) : '—'}</b>`;
+  row.querySelector('.tot b').textContent = total > 0 ? money(total) : '—';
   row.querySelector('.st').innerHTML = schedRowStatus({ date: dateAt(yy, mm - 1, +c.dueDay), paid: false, amount: total });
   $('#card-summary').innerHTML = cardSummaryHTML(c);
   // Elle girilen tutar toplam borcu değiştirir: kart görselini de yeniden çizmeden güncelle
@@ -1186,6 +1274,7 @@ $('#import-file').addEventListener('change', async e => {
   try {
     const data = JSON.parse(await file.text());
     if (!data || !Array.isArray(data.cards) || !Array.isArray(data.incomes)) throw new Error('format');
+    backupBefore('İçe aktarmadan önceki hal');
     state = migrate(Object.assign(emptyState(), data));
     save();
     alert('Veriler içe aktarıldı.');
